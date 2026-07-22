@@ -1,66 +1,84 @@
 const express = require('express');
-const mysql = require('mysql2/promise');
+const http = require('http');
+const { Server } = require('socket.io');
 const cors = require('cors');
-require('dotenv').config();
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+app.use(cors()); // Habilita CORS para aceptar conexiones externas
 
-// Conexión automática a tu base de datos MySQL en Railway
-const pool = mysql.createPool(process.env.DATABASE_URL);
+const server = http.createServer(app);
 
-// Ruta de prueba para saber si la API está viva
-app.get('/', (req, res) => {
-  res.send('¡La API de Mi Lugar Seguro está funcionando correctamente! 💜');
-});
-
-// 1. ENDPOINT PARA CREAR/REGISTRAR LA PAREJA
-app.post('/api/pareja/crear', async (req, res) => {
-  const { codigo_vinculacion, nombre_persona1 } = req.body;
-  try {
-    // MySQL usa '?' en lugar de '$1, $2'
-    const query = `
-      INSERT INTO parejas (codigo_vinculacion, nombre_persona1, fecha_inicio) 
-      VALUES (?, ?, NOW());
-    `;
-    const values = [codigo_vinculacion, nombre_persona1];
-    await pool.query(query, values);
-    
-    // MySQL no usa "RETURNING *", así que buscamos la fila recién creada
-    const [nuevo] = await pool.query('SELECT * FROM parejas WHERE codigo_vinculacion = ?', [codigo_vinculacion]);
-    
-    res.status(201).json({ success: true, data: nuevo[0] });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// 2. ENDPOINT PARA VINCULAR A LA SEGUNDA PERSONA
-app.post('/api/pareja/vincular', async (req, res) => {
-  const { codigo_vinculacion, nombre_persona2 } = req.body;
-  try {
-    const queryUpdate = `
-      UPDATE parejas 
-      SET nombre_persona2 = ? 
-      WHERE codigo_vinculacion = ?;
-    `;
-    const [actualizado] = await pool.query(queryUpdate, [nombre_persona2, codigo_vinculacion]);
-    
-    if (actualizado.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: 'Código no encontrado' });
+// Configuración de Socket.IO
+const io = new Server(server, {
+    cors: {
+        origin: "*", // En producción, puedes restringir esto a tu app
+        methods: ["GET", "POST"]
     }
-
-    // Buscamos los datos de la pareja ya actualizada
-    const [parejaActualizada] = await pool.query('SELECT * FROM parejas WHERE codigo_vinculacion = ?', [codigo_vinculacion]);
-
-    res.status(200).json({ success: true, data: parejaActualizada[0] });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
 });
 
+io.on('connection', (socket) => {
+    console.log(`Usuario conectado: ${socket.id}`);
+
+    // ==========================================
+    // 1. SISTEMA SOS Y VINCULACIÓN BÁSICA
+    // ==========================================
+    socket.on('unirse_pareja', (codigoVinculacion) => {
+        socket.join(codigoVinculacion);
+        console.log(`Socket ${socket.id} se unió a la sala: ${codigoVinculacion}`);
+    });
+
+    socket.on('enviar_sos', (codigoVinculacion) => {
+        // Envía la alerta a todos en la sala EXCEPTO al que la envió
+        socket.to(codigoVinculacion).emit('sonar_alarma_sos');
+        console.log(`Alerta SOS enviada a la sala: ${codigoVinculacion}`);
+    });
+
+
+    // ==========================================
+    // 2. JUEGO: COMPLETA EL DIBUJO
+    // ==========================================
+    socket.on('unirse_juego', (codigoVinculacion) => {
+        socket.join(codigoVinculacion);
+    });
+
+    socket.on('dibujar_trazo', (data) => {
+        // data espera: { sala, x, y, fin }
+        socket.to(data.sala).emit('recibir_trazo', data);
+    });
+
+    socket.on('limpiar_lienzo', (sala) => {
+        socket.to(sala).emit('limpiar_lienzo');
+    });
+
+    socket.on('ceder_turno_juego1', (sala) => {
+        socket.to(sala).emit('cambio_turno_juego1');
+    });
+
+
+    // ==========================================
+    // 3. JUEGO: CHARADAS DIBUJADAS
+    // ==========================================
+    socket.on('iniciar_ronda_charadas', (data) => {
+        // data espera: { sala, categoria }
+        socket.to(data.sala).emit('ronda_charadas_iniciada', data.categoria);
+    });
+
+    socket.on('dibujar_charadas', (data) => {
+        // data espera: { sala, x, y, fin }
+        socket.to(data.sala).emit('recibir_trazo_charadas', data);
+    });
+
+
+    // ==========================================
+    // DESCONEXIÓN
+    // ==========================================
+    socket.on('disconnect', () => {
+        console.log(`Usuario desconectado: ${socket.id}`);
+    });
+});
+
+// Inicialización del servidor
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en el puerto ${PORT}`);
+server.listen(PORT, () => {
+    console.log(`Servidor de Mi Lugar Seguro corriendo en el puerto ${PORT}`);
 });
