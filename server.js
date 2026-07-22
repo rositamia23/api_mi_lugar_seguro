@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión automática a tu base de datos MySQL en Railway usando la variable de entorno
+// Conexión automática a tu base de datos MySQL en Railway
 const pool = mysql.createPool(process.env.DATABASE_URL);
 
 // Ruta de prueba para saber si la API está viva
@@ -19,17 +19,18 @@ app.get('/', (req, res) => {
 app.post('/api/pareja/crear', async (req, res) => {
   const { codigo_vinculacion, nombre_persona1 } = req.body;
   try {
+    // MySQL usa '?' en lugar de '$1, $2'
     const query = `
       INSERT INTO parejas (codigo_vinculacion, nombre_persona1, fecha_inicio) 
-      VALUES (?, ?, NOW())
+      VALUES (?, ?, NOW());
     `;
-    const [resultado] = await pool.query(query, [codigo_vinculacion, nombre_persona1]);
+    const values = [codigo_vinculacion, nombre_persona1];
+    await pool.query(query, values);
     
-    res.status(201).json({ 
-      success: true, 
-      message: 'Pareja creada con éxito',
-      idInsertado: resultado.insertId 
-    });
+    // MySQL no usa "RETURNING *", así que buscamos la fila recién creada
+    const [nuevo] = await pool.query('SELECT * FROM parejas WHERE codigo_vinculacion = ?', [codigo_vinculacion]);
+    
+    res.status(201).json({ success: true, data: nuevo[0] });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -42,15 +43,18 @@ app.post('/api/pareja/vincular', async (req, res) => {
     const queryUpdate = `
       UPDATE parejas 
       SET nombre_persona2 = ? 
-      WHERE codigo_vinculacion = ?
+      WHERE codigo_vinculacion = ?;
     `;
-    const [resultado] = await pool.query(queryUpdate, [nombre_persona2, codigo_vinculacion]);
+    const [actualizado] = await pool.query(queryUpdate, [nombre_persona2, codigo_vinculacion]);
     
-    if (resultado.affectedRows === 0) {
+    if (actualizado.affectedRows === 0) {
       return res.status(404).json({ success: false, message: 'Código no encontrado' });
     }
 
-    res.status(200).json({ success: true, message: 'Vinculación exitosa' });
+    // Buscamos los datos de la pareja ya actualizada
+    const [parejaActualizada] = await pool.query('SELECT * FROM parejas WHERE codigo_vinculacion = ?', [codigo_vinculacion]);
+
+    res.status(200).json({ success: true, data: parejaActualizada[0] });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
